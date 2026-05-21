@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Order — Customer Ordering System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- ── HEADER ─────────────────────────────────────────────────────────── -->
+<header class="site-header">
+  <div class="logo">
+    <span class="logo-icon">🍽</span>
+    <span class="logo-text">TableOrder</span>
+  </div>
+  <button id="cart-toggle" class="cart-btn" aria-label="Open cart">
+    🛒 Cart <span id="cart-badge" class="badge hidden">0</span>
+  </button>
+</header>
+
+<!-- ── MAIN ───────────────────────────────────────────────────────────── -->
+<main>
+
+  <!-- Menu Section -->
+  <section id="menu-section">
+    <h1 class="page-title">Today's Menu</h1>
+    <div id="menu-container" class="menu-grid">
+      <p class="loading-msg">Loading menu…</p>
+    </div>
+  </section>
+
+  <!-- Cart Sidebar -->
+  <aside id="cart-sidebar" class="cart-sidebar hidden" aria-label="Cart">
+    <div class="cart-header">
+      <h2>Your Order</h2>
+      <button id="close-cart" class="icon-btn">✕</button>
+    </div>
+    <div id="cart-items-list" class="cart-items-list">
+      <p class="empty-cart-msg">Your cart is empty.</p>
+    </div>
+    <div class="cart-footer">
+      <div class="total-row">
+        <span>Total (incl. 14% tax)</span>
+        <span id="cart-total">EGP 0.00</span>
+      </div>
+      <button id="proceed-to-checkout" class="btn-primary" disabled>Proceed to Checkout</button>
+    </div>
+  </aside>
+  <div id="cart-overlay" class="overlay hidden"></div>
+
+  <!-- Checkout Section -->
+  <section id="checkout-section" class="hidden">
+    <div class="checkout-card">
+      <button id="back-to-menu" class="back-btn">← Back to Menu</button>
+      <h2>Checkout</h2>
+      <div id="checkout-summary" class="checkout-summary"></div>
+
+      <form id="payment-form" class="payment-form" onsubmit="return false;">
+        <label>Card Number
+          <input type="text" id="card-number" placeholder="4242 4242 4242 4242" maxlength="19" autocomplete="cc-number" />
+        </label>
+        <div class="card-row">
+          <label>Expiry
+            <input type="text" id="card-expiry" placeholder="MM/YY" maxlength="5" autocomplete="cc-exp" />
+          </label>
+          <label>CVV
+            <input type="text" id="card-cvv" placeholder="123" maxlength="3" autocomplete="cc-csc" />
+          </label>
+        </div>
+        <p id="payment-error" class="error-msg hidden"></p>
+        <button id="confirm-payment" class="btn-primary">Confirm Payment</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Order Confirmation / Tracking Section -->
+  <section id="tracking-section" class="hidden">
+    <div class="tracking-card">
+      <div class="tracking-icon">✅</div>
+      <h2 id="order-confirmation">Order Received!</h2>
+      <p id="order-id-display" class="order-id"></p>
+
+      <div class="status-tracker">
+        <div class="status-step active" data-step="Received">
+          <div class="step-dot"></div>
+          <span>Received</span>
+        </div>
+        <div class="status-connector"></div>
+        <div class="status-step" data-step="Preparing">
+          <div class="step-dot"></div>
+          <span>Preparing</span>
+        </div>
+        <div class="status-connector"></div>
+        <div class="status-step" data-step="Ready">
+          <div class="step-dot"></div>
+          <span>Ready 🍽</span>
+        </div>
+      </div>
+
+      <button id="new-order-btn" class="btn-secondary">Place Another Order</button>
+    </div>
+  </section>
+
+</main>
+
+<script>
+  // ── State ─────────────────────────────────────────────────────────────
+  let cart = [];
+  let currentOrderId = null;
+  let pollInterval = null;
+
+  // ── Init ──────────────────────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', () => {
+    loadMenu();
+    bindEvents();
+    const path = window.location.pathname;
+    const match = path.match(/\/track\/(ORD-[A-Z0-9]+)/);
+    if (match) showTracking(match[1]);
+  });
+
+  // ── Events ────────────────────────────────────────────────────────────
+  function bindEvents() {
+    document.getElementById('cart-toggle').addEventListener('click', openCart);
+    document.getElementById('close-cart').addEventListener('click', closeCart);
+    document.getElementById('cart-overlay').addEventListener('click', closeCart);
+    document.getElementById('proceed-to-checkout').addEventListener('click', showCheckout);
+    document.getElementById('back-to-menu').addEventListener('click', backToMenu);
+    document.getElementById('confirm-payment').addEventListener('click', submitPayment);
+    document.getElementById('new-order-btn').addEventListener('click', resetAll);
+  }
+
+  // ── Menu ──────────────────────────────────────────────────────────────
+  async function loadMenu() {
+    const res = await fetch('/api/menu');
+    if (!res.ok) { document.getElementById('menu-container').innerHTML = '<p class="error-msg">Failed to load menu.</p>'; return; }
+    const data = await res.json();
+    renderMenu(data.categories);
+  }
+
+  function renderMenu(categories) {
+    const container = document.getElementById('menu-container');
+    container.innerHTML = '';
+    categories.forEach(cat => {
+      const section = document.createElement('div');
+      section.className = 'menu-category';
+      section.innerHTML = `<h2 class="category-title">${cat.name}</h2>`;
+      const grid = document.createElement('div');
+      grid.className = 'items-grid';
+      cat.items.forEach(item => {
+        const card = document.createElement('div');
+        card.className = `menu-item${item.available ? '' : ' unavailable'}`;
+        card.innerHTML = `
+          <div class="item-info">
+            <h3 class="item-name">${item.name}</h3>
+            <p class="item-desc">${item.description}</p>
+            <span class="item-price">EGP ${item.price.toFixed(2)}</span>
+          </div>
+          ${item.available
+            ? `<button class="add-to-cart-btn" onclick="addToCart(${item.id}, '${escHtml(item.name)}', ${item.price})">Add +</button>`
+            : `<span class="out-of-stock-badge">Out of Stock</span>`
+          }
+        `;
+        grid.appendChild(card);
+      });
+      section.appendChild(grid);
+      container.appendChild(section);
+    });
+  }
+
+  // ── Cart ──────────────────────────────────────────────────────────────
+  async function addToCart(itemId, name, price) {
+    const res = await fetch('/api/cart/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ item_id: itemId, quantity: 1 }),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.error); return; }
+    cart = data.cart;
+    updateCartUI(data.total);
+  }
+
+  function updateCartUI(total) {
+    const badge = document.getElementById('cart-badge');
+    const totalCount = cart.reduce((s, i) => s + i.quantity, 0);
+    badge.textContent = totalCount;
+    badge.classList.toggle('hidden', totalCount === 0);
+
+    document.getElementById('cart-total').textContent = `EGP ${(total || 0).toFixed(2)}`;
+    document.getElementById('proceed-to-checkout').disabled = cart.length === 0;
+
+    const list = document.getElementById('cart-items-list');
+    if (cart.length === 0) {
+      list.innerHTML = '<p class="empty-cart-msg">Your cart is empty.</p>';
+      return;
+    }
+    list.innerHTML = cart.map(item => `
+      <div class="cart-item">
+        <span class="cart-item-name">${item.name}</span>
+        <span class="cart-item-qty">×${item.quantity}</span>
+        <span class="cart-item-price">EGP ${(item.price * item.quantity).toFixed(2)}</span>
+      </div>
+    `).join('');
+  }
+
+  function openCart() {
+    document.getElementById('cart-sidebar').classList.remove('hidden');
+    document.getElementById('cart-overlay').classList.remove('hidden');
+  }
+  function closeCart() {
+    document.getElementById('cart-sidebar').classList.add('hidden');
+    document.getElementById('cart-overlay').classList.add('hidden');
+  }
+
+  // ── Checkout ──────────────────────────────────────────────────────────
+  function showCheckout() {
+    closeCart();
+    document.getElementById('menu-section').classList.add('hidden');
+    document.getElementById('checkout-section').classList.remove('hidden');
+
+    const total = cart.reduce((s, i) => s + i.price * i.quantity, 0) * 1.14;
+    document.getElementById('checkout-summary').innerHTML = `
+      <ul class="summary-list">
+        ${cart.map(i => `<li><span>${i.name} ×${i.quantity}</span><span>EGP ${(i.price * i.quantity).toFixed(2)}</span></li>`).join('')}
+        <li class="summary-total"><span>Total (incl. 14% tax)</span><span>EGP ${total.toFixed(2)}</span></li>
+      </ul>
+    `;
+  }
+
+  function backToMenu() {
+    document.getElementById('checkout-section').classList.add('hidden');
+    document.getElementById('menu-section').classList.remove('hidden');
+    document.getElementById('payment-error').classList.add('hidden');
+  }
+
+  async function submitPayment() {
+    const token = document.getElementById('card-number').value.replace(/\s/g, '');
+    const errorEl = document.getElementById('payment-error');
+    errorEl.classList.add('hidden');
+
+    if (!token) { showError('Please enter your card details.'); return; }
+
+    const requestId = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
+    const btn = document.getElementById('confirm-payment');
+    btn.disabled = true;
+    btn.textContent = 'Processing…';
+
+    const res = await fetch('/api/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ payment_token: token, request_id: requestId }),
+    });
+    const data = await res.json();
+    btn.disabled = false;
+    btn.textContent = 'Confirm Payment';
+
+    if (!res.ok) { showError(data.error || 'Payment failed. Please try again.'); return; }
+
+    cart = [];
+    await fetch('/api/cart/clear', { method: 'DELETE' });
+    showTracking(data.order_id);
+  }
+
+  function showError(msg) {
+    const el = document.getElementById('payment-error');
+    el.textContent = msg;
+    el.classList.remove('hidden');
+  }
+
+  // ── Tracking ──────────────────────────────────────────────────────────
+  function showTracking(orderId) {
+    currentOrderId = orderId;
+    document.getElementById('checkout-section').classList.add('hidden');
+    document.getElementById('menu-section').classList.add('hidden');
+    document.getElementById('tracking-section').classList.remove('hidden');
+    document.getElementById('order-id-display').textContent = `Order ID: ${orderId}`;
+    updateBadge('Received');
+    startPolling(orderId);
+  }
+
+  function startPolling(orderId) {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(async () => {
+      const res = await fetch(`/api/order/${orderId}/status`);
+      if (!res.ok) return;
+      const data = await res.json();
+      updateBadge(data.status);
+      if (data.status === 'Ready') clearInterval(pollInterval);
+    }, 3000);
+  }
+
+  function updateBadge(status) {
+    document.querySelectorAll('.status-step').forEach(step => {
+      const stepName = step.dataset.step;
+      const order = ['Received', 'Preparing', 'Ready'];
+      const statusIdx = order.indexOf(status);
+      const stepIdx = order.indexOf(stepName);
+      step.classList.toggle('active', stepName === status);
+      step.classList.toggle('done', stepIdx < statusIdx);
+    });
+  }
+
+  function resetAll() {
+    if (pollInterval) clearInterval(pollInterval);
+    cart = []; currentOrderId = null;
+    document.getElementById('tracking-section').classList.add('hidden');
+    document.getElementById('menu-section').classList.remove('hidden');
+    document.getElementById('cart-badge').classList.add('hidden');
+    document.getElementById('cart-total').textContent = 'EGP 0.00';
+    document.getElementById('cart-items-list').innerHTML = '<p class="empty-cart-msg">Your cart is empty.</p>';
+    document.getElementById('proceed-to-checkout').disabled = true;
+    loadMenu();
+  }
+
+  function escHtml(s) { return s.replace(/'/g, "\\'"); }
+</script>
+</body>
+</html>
